@@ -1,0 +1,23 @@
+# Never commit these — private data and secrets
+
+# Database (all your chats, users, messages)
+backend/tko.db
+backend/tko.db-shm
+backend/tko.db-wal
+
+# Media files (photos, videos, audio people sent)
+backend/media/
+
+# Environment secrets (JWT secret, email password)
+backend/.env
+
+# Dependencies (huge, auto-installed with npm install)
+backend/node_modules/
+frontend/node_modules/
+
+# Built frontend (auto-generated with npm run build)
+frontend/build/
+
+# OS junk
+.DS_Store
+Thumbs.db
