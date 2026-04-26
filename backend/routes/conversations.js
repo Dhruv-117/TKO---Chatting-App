@@ -163,6 +163,7 @@ router.get('/:id/messages', authMiddleware, (req, res) => {
 
   const messages = db.prepare(`
     SELECT m.id, m.sender_id, m.encrypted_content, m.message_type, m.media_url, m.media_name, m.media_size, m.created_at,
+           m.reply_to_id, m.hidden_by,
            u.display_name as sender_name, u.avatar_color as sender_color, u.username as sender_username
     FROM messages m
     JOIN users u ON u.id = m.sender_id
@@ -179,36 +180,68 @@ router.get('/:id/messages', authMiddleware, (req, res) => {
     }
   }
 
-  res.json(messages.map(m => ({
-    id: m.id,
-    senderId: m.sender_id,
-    senderName: m.sender_name,
-    senderColor: m.sender_color,
-    senderUsername: m.sender_username,
-    encryptedContent: m.encrypted_content,
-    type: m.message_type,
-    mediaUrl: m.media_url,
-    mediaName: m.media_name,
-    mediaSize: m.media_size,
-    createdAt: m.created_at
-  })));
+  // Filter hidden messages and attach reply previews
+  const userId = req.user.id;
+  const result = messages
+    .filter(m => {
+      if (!m.hidden_by) return true;
+      try { return !JSON.parse(m.hidden_by).includes(userId); } catch { return true; }
+    })
+    .map(m => {
+      let replyPreview = null;
+      if (m.reply_to_id) {
+        const replied = messages.find(r => r.id === m.reply_to_id);
+        if (replied) replyPreview = {
+          encryptedContent: replied.encrypted_content,
+          type: replied.message_type,
+          senderName: replied.sender_name,
+        };
+      }
+      return {
+        id: m.id,
+        senderId: m.sender_id,
+        senderName: m.sender_name,
+        senderColor: m.sender_color,
+        senderUsername: m.sender_username,
+        encryptedContent: m.encrypted_content,
+        type: m.message_type,
+        mediaUrl: m.media_url,
+        mediaName: m.media_name,
+        mediaSize: m.media_size,
+        createdAt: m.created_at,
+        replyToId: m.reply_to_id,
+        replyPreview,
+      };
+    });
+
+  res.json(result);
 });
 
 // Send message
 router.post('/:id/messages', authMiddleware, (req, res) => {
-  const { encryptedContent, type } = req.body;
+  const { encryptedContent, type, replyToId } = req.body;
   const member = db.prepare('SELECT 1 FROM conversation_members WHERE conversation_id = ? AND user_id = ?').get(req.params.id, req.user.id);
   if (!member) return res.status(403).json({ error: 'Access denied' });
 
   const msgId = uuidv4();
   db.prepare(`
-    INSERT INTO messages (id, conversation_id, sender_id, encrypted_content, message_type) VALUES (?, ?, ?, ?, ?)
-  `).run(msgId, req.params.id, req.user.id, encryptedContent, type || 'text');
+    INSERT INTO messages (id, conversation_id, sender_id, encrypted_content, message_type, reply_to_id) VALUES (?, ?, ?, ?, ?, ?)
+  `).run(msgId, req.params.id, req.user.id, encryptedContent, type || 'text', replyToId || null);
 
   const msg = db.prepare(`
     SELECT m.*, u.display_name as sender_name, u.avatar_color as sender_color, u.username as sender_username
     FROM messages m JOIN users u ON u.id = m.sender_id WHERE m.id = ?
   `).get(msgId);
+
+  // Get reply preview if replying
+  let replyPreview = null;
+  if (replyToId) {
+    const replied = db.prepare(`
+      SELECT m.encrypted_content, m.message_type, u.display_name as sender_name
+      FROM messages m JOIN users u ON u.id = m.sender_id WHERE m.id = ?
+    `).get(replyToId);
+    if (replied) replyPreview = { encryptedContent: replied.encrypted_content, type: replied.message_type, senderName: replied.sender_name };
+  }
 
   res.json({
     id: msg.id,
@@ -218,8 +251,33 @@ router.post('/:id/messages', authMiddleware, (req, res) => {
     senderUsername: msg.sender_username,
     encryptedContent: msg.encrypted_content,
     type: msg.message_type,
+    replyToId: replyToId || null,
+    replyPreview,
     createdAt: msg.created_at
   });
+});
+
+// Delete message
+router.delete('/:id/messages/:msgId', authMiddleware, (req, res) => {
+  const { deleteFor } = req.body; // 'me' or 'everyone'
+  const msg = db.prepare('SELECT * FROM messages WHERE id = ? AND conversation_id = ?').get(req.params.msgId, req.params.id);
+  if (!msg) return res.status(404).json({ error: 'Message not found' });
+
+  const member = db.prepare('SELECT 1 FROM conversation_members WHERE conversation_id = ? AND user_id = ?').get(req.params.id, req.user.id);
+  if (!member) return res.status(403).json({ error: 'Access denied' });
+
+  if (deleteFor === 'everyone') {
+    // Only sender can delete for everyone
+    if (msg.sender_id !== req.user.id) return res.status(403).json({ error: 'Only sender can delete for everyone' });
+    db.prepare('UPDATE messages SET is_deleted = 1, encrypted_content = ? WHERE id = ?').run('', req.params.msgId);
+  } else {
+    // Delete for me — store in a hidden_by field
+    const existing = msg.hidden_by ? JSON.parse(msg.hidden_by) : [];
+    if (!existing.includes(req.user.id)) existing.push(req.user.id);
+    db.prepare('UPDATE messages SET hidden_by = ? WHERE id = ?').run(JSON.stringify(existing), req.params.msgId);
+  }
+
+  res.json({ success: true, deleteFor });
 });
 
 // Upload media

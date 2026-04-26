@@ -164,6 +164,12 @@ io.on('connection', (socket) => {
     socket.join(conversationData.id);
   });
 
+  socket.on('message_deleted_broadcast', ({ conversationId, messageId, deleteFor }) => {
+    const isMember = db.prepare('SELECT 1 FROM conversation_members WHERE conversation_id = ? AND user_id = ?').get(conversationId, userId);
+    if (!isMember) return;
+    socket.to(conversationId).emit('message_deleted', { messageId, deleteFor });
+  });
+
   // Account deleted — notify all conversation members to remove the chat
   socket.on('account_deleted', ({ conversationIds }) => {
     for (const convoId of conversationIds) {

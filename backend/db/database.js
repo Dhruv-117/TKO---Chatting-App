@@ -151,6 +151,16 @@ function initializeDatabase() {
     db.exec('ALTER TABLE users ADD COLUMN encrypted_private_key TEXT');
     console.log('✅ Migration: added encrypted_private_key column');
   }
+
+  const msgCols = db.prepare("PRAGMA table_info(messages)").all().map(c => c.name);
+  if (!msgCols.includes('reply_to_id')) {
+    db.exec('ALTER TABLE messages ADD COLUMN reply_to_id TEXT');
+    console.log('✅ Migration: added reply_to_id column');
+  }
+  if (!msgCols.includes('hidden_by')) {
+    db.exec('ALTER TABLE messages ADD COLUMN hidden_by TEXT');
+    console.log('✅ Migration: added hidden_by column');
+  }
 }
 
 initializeDatabase();
